@@ -1,0 +1,318 @@
+Dashboard Component:
+import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import {
+  Box,
+  Typography,
+  Card,
+  CardContent,
+  Grid,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  Button,
+  CircularProgress
+} from '@mui/material';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { formatCurrency } from '../utils/formatters';
+import api from '../services/api';
+
+interface Organization {
+  id: string;
+  name: string;
+  billingAddress: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+  };
+}
+
+interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  issueDate: string;
+  dueDate: string;
+  amount: number;
+  status: 'draft' | 'sent' | 'paid' | 'overdue' | 'void';
+}
+
+interface Transaction {
+  id: string;
+  amount: number;
+  description: string;
+  transactionDate: string;
+  status: string;
+}
+
+const Dashboard: React.FC = () => {
+  const { organizationId } = useParams<{ organizationId: string }>();
+  const [organization, setOrganization] = useState<Organization | null>(null);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalBilled: 0,
+    outstandingBalance: 0,
+    transactionsCount: 0
+  });
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        
+        // Parallel requests
+        const [orgRes, invoicesRes, transactionsRes] = await Promise.all([
+          api.get(`/organizations/${organizationId}`),
+          api.get(`/invoices?organizationId=${organizationId}&limit=5`),
+          api.get(`/transactions?organizationId=${organizationId}&limit=10`)
+        ]);
+
+        setOrganization(orgRes.data);
+        setInvoices(invoicesRes.data);
+        setTransactions(transactionsRes.data);
+
+        // Calculate stats
+        const totalBilled = invoicesRes.data
+          .filter((inv: Invoice) => inv.status === 'paid')
+          .reduce((sum: number, inv: Invoice) => sum + inv.amount, 0);
+        
+        const outstandingBalance = invoicesRes.data
+          .filter((inv: Invoice) => ['sent', 'overdue'].includes(inv.status))
+          .reduce((sum: number, inv: Invoice) => sum + inv.amount, 0);
+        
+        setStats({
+          totalBilled,
+          outstandingBalance,
+          transactionsCount: transactionsRes.data.length
+        });
+
+      } catch (error) {
+        console.error('Failed to fetch data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [organizationId]);
+
+  const handleGenerateInvoice = async () => {
+    try {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const response = await api.post('/invoices/generate', {
+        organizationId,
+        startDate: thirtyDaysAgo.toISOString().split('T')[0],
+        endDate: new Date().toISOString().split('T')[0]
+      });
+      
+      alert(`Invoice generation started: ${response.data.invoiceNumber}`);
+    } catch (error) {
+      console.error('Failed to generate invoice:', error);
+      alert('Failed to start invoice generation');
+    }
+  };
+
+  const handleDownloadInvoice = (invoiceId: string) => {
+    window.open(`/api/invoices/${invoiceId}/download`, '_blank');
+  };
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="80vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Prepare chart data
+  const chartData = invoices.map(invoice => ({
+    date: new Date(invoice.issueDate).toLocaleDateString(),
+    amount: invoice.amount,
+    name: invoice.invoiceNumber
+  }));
+
+  return (
+    <Box sx={{ padding: 3 }}>
+      <Typography variant="h4" gutterBottom>
+        Billing Dashboard - {organization?.name}
+      </Typography>
+      
+      <Grid container spacing={3} sx={{ marginBottom: 3 }}>
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Total Billed
+              </Typography>
+              <Typography variant="h5">
+                {formatCurrency(stats.totalBilled)}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Outstanding Balance
+              </Typography>
+              <Typography variant="h5" color="error">
+                {formatCurrency(stats.outstandingBalance)}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        
+        <Grid item xs={12} md={4}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Recent Transactions
+              </Typography>
+              <Typography variant="h5">
+                {stats.transactionsCount}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
+      <Box sx={{ marginBottom: 3 }}>
+        <Button 
+          variant="contained" 
+          color="primary"
+          onClick={handleGenerateInvoice}
+        >
+          Generate New Invoice
+        </Button>
+      </Box>
+
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={8}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Billing History
+              </Typography>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => [formatCurrency(Number(value)), 'Amount']} />
+                  <Legend />
+                  <Line type="monotone" dataKey="amount" stroke="#8884d8" activeDot={{ r: 8 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+        
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Recent Invoices
+              </Typography>
+              <TableContainer component={Paper}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Number</TableCell>
+                      <TableCell align="right">Amount</TableCell>
+                      <TableCell>Status</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {invoices.map((invoice) => (
+                      <TableRow 
+                        key={invoice.id}
+                        hover
+                        onClick={() => handleDownloadInvoice(invoice.id)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <TableCell>{invoice.invoiceNumber}</TableCell>
+                        <TableCell align="right">{formatCurrency(invoice.amount)}</TableCell>
+                        <TableCell>
+                          <Box 
+                            component="span"
+                            sx={{
+                              color: invoice.status === 'paid' ? 'success.main' : 
+                                    invoice.status === 'overdue' ? 'error.main' : 
+                                    'text.secondary',
+                              fontWeight: 'medium'
+                            }}
+                          >
+                            {invoice.status}
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
+      <Box sx={{ marginTop: 3 }}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Recent Transactions
+            </Typography>
+            <TableContainer component={Paper}>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Description</TableCell>
+                    <TableCell align="right">Amount</TableCell>
+                    <TableCell>Status</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {transactions.map((tx) => (
+                    <TableRow key={tx.id}>
+                      <TableCell>
+                        {new Date(tx.transactionDate).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>{tx.description}</TableCell>
+                      <TableCell align="right">{formatCurrency(tx.amount)}</TableCell>
+                      <TableCell>
+                        <Box 
+                          component="span"
+                          sx={{
+                            color: tx.status === 'completed' ? 'success.main' : 
+                                  tx.status === 'failed' ? 'error.main' : 
+                                  'warning.main',
+                            fontWeight: 'medium'
+                          }}
+                        >
+                          {tx.status}
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      </Box>
+    </Box>
+  );
+};
+
+export default Dashboard;
