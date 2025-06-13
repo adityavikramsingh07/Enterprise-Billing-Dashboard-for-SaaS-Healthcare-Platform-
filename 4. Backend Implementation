@@ -1,0 +1,193 @@
+Core Billing Service (TypeScript):
+import express from 'express';
+import { Pool } from 'mysql2/promise';
+import AWS from 'aws-sdk';
+import { v4 as uuidv4 } from 'uuid';
+import { generatePdf } from './pdfGenerator';
+
+const app = express();
+app.use(express.json());
+
+// Database connection pool
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// S3 client for invoice storage
+const s3 = new AWS.S3({
+  region: process.env.AWS_REGION,
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+});
+
+/**
+ * Generate invoice API endpoint
+ * Uses async processing via SQS for scalability
+ */
+app.post('/api/invoices/generate', async (req, res) => {
+  const { organizationId, startDate, endDate } = req.body;
+  
+  try {
+    // Validate input
+    if (!organizationId || !startDate || !endDate) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Check organization exists
+    const [orgRows] = await pool.query(
+      'SELECT * FROM organizations WHERE id = ?',
+      [organizationId]
+    );
+    
+    if (orgRows.length === 0) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Generate unique invoice number
+    const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    
+    // Create invoice record in database (initial draft)
+    const invoiceId = uuidv4();
+    await pool.query(
+      `INSERT INTO invoices 
+       (id, organization_id, invoice_number, issue_date, due_date, amount, status)
+       VALUES (?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 30 DAY), 0, 'draft')`,
+      [invoiceId, organizationId, invoiceNumber]
+    );
+
+    // Queue async invoice generation
+    const sqs = new AWS.SQS();
+    await sqs.sendMessage({
+      QueueUrl: process.env.INVOICE_QUEUE_URL,
+      MessageBody: JSON.stringify({
+        invoiceId,
+        organizationId,
+        startDate,
+        endDate
+      })
+    }).promise();
+
+    return res.status(202).json({
+      message: 'Invoice generation started',
+      invoiceId,
+      invoiceNumber
+    });
+    
+  } catch (error) {
+    console.error('Invoice generation error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// AWS Lambda handler for async invoice processing
+export const processInvoiceHandler = async (event: any) => {
+  const { invoiceId, organizationId, startDate, endDate } = JSON.parse(event.Records[0].body);
+  
+  try {
+    // Get all transactions for the period
+    const [transactions] = await pool.query(
+      `SELECT * FROM transactions 
+       WHERE organization_id = ? 
+       AND transaction_date BETWEEN ? AND ?
+       AND status = 'completed'`,
+      [organizationId, startDate, endDate]
+    );
+
+    // Calculate total amount
+    let totalAmount = 0;
+    const lineItems = [];
+    
+    for (const tx of transactions) {
+      totalAmount += tx.amount;
+      lineItems.push({
+        description: tx.description || 'Service usage',
+        quantity: 1,
+        unit_price: tx.amount,
+        amount: tx.amount
+      });
+    }
+
+    // Add tax calculation (simplified)
+    const taxAmount = totalAmount * 0.1; // 10% tax
+    const totalWithTax = totalAmount + taxAmount;
+
+    // Update invoice in database
+    await pool.query(
+      `UPDATE invoices 
+       SET amount = ?, tax_amount = ?, status = 'sent'
+       WHERE id = ?`,
+      [totalWithTax, taxAmount, invoiceId]
+    );
+
+    // Add line items
+    for (const item of lineItems) {
+      await pool.query(
+        `INSERT INTO invoice_line_items
+         (id, invoice_id, description, quantity, unit_price, amount)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [uuidv4(), invoiceId, item.description, item.quantity, item.unit_price, item.amount]
+      );
+    }
+
+    // Generate PDF invoice
+    const [orgData] = await pool.query(
+      'SELECT * FROM organizations WHERE id = ?',
+      [organizationId]
+    );
+    
+    const [invoiceData] = await pool.query(
+      `SELECT i.*, 
+       (SELECT JSON_ARRAYAGG(JSON_OBJECT(
+         'description', description,
+         'quantity', quantity,
+         'unitPrice', unit_price,
+         'amount', amount
+       )) AS items
+       FROM invoices i
+       LEFT JOIN invoice_line_items li ON i.id = li.invoice_id
+       WHERE i.id = ?
+       GROUP BY i.id`,
+      [invoiceId]
+    );
+
+    const pdfBuffer = await generatePdf(orgData[0], invoiceData[0]);
+
+    // Upload to S3
+    const s3Key = `invoices/${organizationId}/${invoiceId}.pdf`;
+    await s3.upload({
+      Bucket: process.env.INVOICE_BUCKET,
+      Key: s3Key,
+      Body: pdfBuffer,
+      ContentType: 'application/pdf'
+    }).promise();
+
+    // Update invoice with storage path
+    await pool.query(
+      `UPDATE invoices SET pdf_storage_path = ? WHERE id = ?`,
+      [s3Key, invoiceId]
+    );
+
+    // Send email notification (omitted for brevity)
+    
+  } catch (error) {
+    console.error('Async invoice processing failed:', error);
+    // Update invoice status to failed
+    await pool.query(
+      `UPDATE invoices SET status = 'void' WHERE id = ?`,
+      [invoiceId]
+    );
+    throw error;
+  }
+};
+
+// Start Express server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Billing service running on port ${PORT}`);
+});
