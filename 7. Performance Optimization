@@ -16,3 +16,31 @@ ALTER TABLE transactions PARTITION BY RANGE (YEAR(transaction_date)) (
     PARTITION p2024 VALUES LESS THAN (2025),
     PARTITION pmax VALUES LESS THAN MAXVALUE
 );
+c. Caching Layer:
+// Implemented Redis caching for dashboard metrics
+import { createClient } from 'redis';
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL
+});
+
+async function getOrganizationStats(orgId: string) {
+  const cacheKey = `org_stats:${orgId}`;
+  
+  try {
+    // Try to get from cache
+    const cached = await redisClient.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+    
+    // Query database if not in cache
+    const stats = await calculateStatsFromDB(orgId);
+    
+    // Cache for 5 minutes
+    await redisClient.setEx(cacheKey, 300, JSON.stringify(stats));
+    
+    return stats;
+  } catch (error) {
+    console.error('Cache error, falling back to DB:', error);
+    return calculateStatsFromDB(orgId);
+  }
+}
