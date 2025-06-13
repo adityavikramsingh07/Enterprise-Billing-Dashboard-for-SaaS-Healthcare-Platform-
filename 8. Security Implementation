@@ -1,0 +1,38 @@
+8. Security Implementation
+a. Authentication & Authorization:
+// JWT authentication middleware
+import jwt from 'express-jwt';
+import jwksRsa from 'jwks-rsa';
+
+export const checkJwt = jwt({
+  secret: jwksRsa.expressJwtSecret({
+    cache: true,
+    rateLimit: true,
+    jwksRequestsPerMinute: 5,
+    jwksUri: `https://${process.env.AUTH0_DOMAIN}/.well-known/jwks.json`
+  }),
+  audience: process.env.AUTH0_AUDIENCE,
+  issuer: `https://${process.env.AUTH0_DOMAIN}/`,
+  algorithms: ['RS256']
+});
+
+// Role-based authorization
+export const checkRole = (role: string) => {
+  return (req: any, res: any, next: any) => {
+    const user = req.user;
+    if (user && user[process.env.AUTH0_NAMESPACE + '/roles'].includes(role)) {
+      next();
+    } else {
+      res.status(403).send('Insufficient permissions');
+    }
+  };
+};
+b. HIPAA Compliance Measures:
+
+Enabled AWS KMS encryption for S3 bucket and RDS database
+
+Implemented audit logging for all data access
+
+Configured VPC with private subnets for Lambda functions
+
+Signed Business Associate Agreement (BAA) with AWS
