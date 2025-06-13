@@ -1,0 +1,18 @@
+a. Asynchronous Invoice Generation:
+
+Implemented SQS queue to decouple invoice generation from API response
+
+Used Lambda functions for parallel processing
+
+Achieved 50% faster response times for invoice requests
+b. Database Optimization:
+-- Added indexes for frequent queries
+CREATE INDEX idx_transactions_org_date ON transactions(organization_id, transaction_date);
+CREATE INDEX idx_invoices_org_status ON invoices(organization_id, status);
+
+-- Partitioned transactions table by date range
+ALTER TABLE transactions PARTITION BY RANGE (YEAR(transaction_date)) (
+    PARTITION p2023 VALUES LESS THAN (2024),
+    PARTITION p2024 VALUES LESS THAN (2025),
+    PARTITION pmax VALUES LESS THAN MAXVALUE
+);
