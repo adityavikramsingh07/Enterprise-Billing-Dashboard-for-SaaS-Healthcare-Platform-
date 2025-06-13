@@ -1,0 +1,72 @@
+Serverless Framework Configuration (serverless.yml):
+service: billing-service
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  memorySize: 512
+  timeout: 30
+  environment:
+    DB_HOST: ${env:DB_HOST}
+    DB_USER: ${env:DB_USER}
+    DB_PASSWORD: ${env:DB_PASSWORD}
+    DB_NAME: ${env:DB_NAME}
+    INVOICE_BUCKET: ${self:service}-invoices-${env:STAGE}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+      Resource: "arn:aws:s3:::${self:service}-invoices-${env:STAGE}/*"
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+      Resource: !GetAtt InvoiceQueue.Arn
+
+functions:
+  api:
+    handler: src/api.handler
+    events:
+      - httpApi: '*'
+  processInvoice:
+    handler: src/processInvoice.handler
+    events:
+      - sqs:
+          arn: !GetAtt InvoiceQueue.Arn
+          batchSize: 1
+
+resources:
+  Resources:
+    InvoiceQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-invoice-queue-${env:STAGE}
+        VisibilityTimeout: 900
+    InvoiceBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-invoices-${env:STAGE}
+        AccessControl: Private
+        LifecycleConfiguration:
+          Rules:
+            - Id: ExpireTempFiles
+              Prefix: temp/
+              Status: Enabled
+              ExpirationInDays: 1
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
+
+outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Ref HttpApi
+  InvoiceQueueUrl:
+    Description: "SQS Queue URL for invoice processing"
+    Value: !Ref InvoiceQueue
