@@ -1,0 +1,24 @@
+┌───────────────────────────────────────────────────────┐
+│                   Client Applications                │
+│  (Web Dashboard, Mobile App, Third-party Integrations)│
+└───────────────┬───────────────────┬──────────────────┘
+                │                   │
+┌───────────────▼───────┐ ┌─────────▼──────────────────┐
+│       API Gateway     │ │       CloudFront CDN       │
+│ (RESTful API Routing) │ │ (Static Frontend Assets)   │
+└───────────────┬───────┘ └─────────┬──────────────────┘
+                │                   │
+┌───────────────▼───────────────────▼───────┐
+│                Load Balancer              │
+│ (Distributes traffic across microservices)│
+└───────┬───────────────────────┬───────────┘
+        │                       │
+┌───────▼───────┐     ┌─────────▼──────────┐
+│  Billing Core │     │   Reporting Service │
+│ (Lambda)      │     │ (EC2 Auto-scaling) │
+└───────┬───────┘     └─────────┬──────────┘
+        │                       │
+┌───────▼───────────────────────▼──────────┐
+│               Data Layer                 │
+│  (MySQL RDS - OLTP | Redshift - OLAP)   │
+└──────────────────────────────────────────┘
